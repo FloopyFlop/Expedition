@@ -76,6 +76,7 @@ class JobRunner:
             return
 
         self._set_status("running")
+        self.storage.job_state.save(self.job_state)
         self.storage.events.log(
             "job_started",
             {"job_id": self.job_state.job_id, "status": self.job_state.status},

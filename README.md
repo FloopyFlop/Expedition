@@ -60,6 +60,30 @@ Then set in `config.json`:
 }
 ```
 
+## Proxying
+
+Add a proxy in `config.json` (credentials will be redacted in archives):
+
+```json
+{
+  "request": {
+    "proxies": {
+      "http": "http://user:pass@host:port",
+      "https": "http://user:pass@host:port",
+      "rotate": false,
+      "pool": []
+    }
+  }
+}
+```
+
+If you want both tests + rendering in one environment:
+
+```bash
+uv sync --extra dev --extra render
+uv run python -m playwright install chromium
+```
+
 ## Workspace layout
 
 Expedition keeps everything under the workspace folder:
@@ -109,6 +133,7 @@ Add to `config.json` to enable the master/worker flow:
 ## Tests
 
 ```bash
+uv sync --extra dev
 uv run pytest
 ```
 

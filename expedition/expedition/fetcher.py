@@ -71,6 +71,7 @@ class CloudscraperFetcher:
         status_code: int | None = None
         final_url: str | None = None
         elapsed_seconds: float | None = None
+        content_type: str | None = None
 
         for attempt in range(request_config.max_retries + 1):
             start = time.monotonic()
@@ -85,6 +86,7 @@ class CloudscraperFetcher:
                 elapsed_seconds = time.monotonic() - start
                 status_code = response.status_code
                 final_url = response.url
+                content_type = response.headers.get("Content-Type")
                 response_headers = {str(k): str(v) for k, v in response.headers.items()}
                 body = response.content or b""
                 error = None
@@ -99,7 +101,6 @@ class CloudscraperFetcher:
                 else:
                     break
 
-        content_type = response_headers.get("Content-Type")
         content_length = len(body) if body else None
 
         return FetchResult(
