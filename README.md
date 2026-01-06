@@ -110,6 +110,10 @@ workspace/
 - All caches and logs live inside the workspace directory.
 - Proxies auto-enable when `request.proxies` includes `http`, `https`, or `pool`.
 
+## Developer docs
+
+For programmatic/library usage, see `DEVELOPER_DOCS.md`.
+
 ## Distributed config
 
 Add to `config.json` to enable the master/worker flow:

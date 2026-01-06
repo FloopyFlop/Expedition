@@ -8,6 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from threading import Event
 
 from ..config import RenderingConfig, RequestConfig
 from ..dedupe import content_hash
@@ -33,7 +34,7 @@ class WorkerClient:
         self.poll_interval = poll_interval
         self.worker_id: str | None = None
 
-    def run(self) -> None:
+    def run(self, stop_event: Event | None = None) -> None:
         self.workspace.mkdir(parents=True, exist_ok=True)
         log_path = self.workspace / "logs" / "worker.log"
         configure_logging(log_path)
@@ -41,6 +42,9 @@ class WorkerClient:
         logger.info("Registered worker %s", self.worker_id)
 
         while True:
+            if stop_event and stop_event.is_set():
+                logger.info("Worker stop event set; exiting.")
+                return
             task = self._next_task()
             if task is None:
                 time.sleep(self.poll_interval)
