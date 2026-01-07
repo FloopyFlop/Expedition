@@ -77,6 +77,19 @@ Add a proxy in `config.json` (credentials will be redacted in archives):
 }
 ```
 
+## Hooks (optional)
+
+Run a per-page hook script or callable:
+
+```bash
+uv run expedition init --workspace ./workspace --seed-url https://example.com \\
+  --hook-script ./hook.py --hook-function process_page
+```
+
+## Embark demo
+
+Embark is a standalone drone-extraction app built on Expedition. See `DEVELOPER_DOCS.md` for full usage.
+
 If you want both tests + rendering in one environment:
 
 ```bash

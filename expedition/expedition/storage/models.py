@@ -34,6 +34,7 @@ class ArchiveWriteRequest:
     proxy_used: str | None
     text: str | None
     summary: ContentSummary | None
+    annotations: dict[str, Any] | None = None
 
 
 @dataclass

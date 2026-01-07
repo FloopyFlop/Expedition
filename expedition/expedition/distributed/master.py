@@ -12,14 +12,23 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Response
 
-from ..config import ExpeditionConfig, ParsingConfig, RenderingConfig, RequestConfig, load_config
+from ..config import (
+    ExpeditionConfig,
+    HookConfig,
+    ParsingConfig,
+    RenderingConfig,
+    RequestConfig,
+    load_config,
+)
 from ..dedupe import content_hash, url_fingerprint
 from ..frontier import Frontier
+from ..hooks import HookContext, HookRunner, should_run_hook
 from ..normalize import normalize_url
 from ..storage.factory import create_backend
 from ..storage.interfaces import StorageBackend
 from ..storage.models import ArchiveWriteRequest, ContentSummary
 from .protocol import (
+    HookPayload,
     ParsingPayload,
     RenderingPayload,
     RegisterWorkerResponse,
@@ -38,6 +47,9 @@ class MasterCoordinator:
         self.config = config
         self.backend = backend
         self.job_state = backend.job_state.load()
+        self.hook_runner = None
+        if should_run_hook(config.hooks, distributed=True, role="master"):
+            self.hook_runner = HookRunner.from_config(config.hooks, workspace=workspace)
 
         items = self.job_state.frontier + self.job_state.in_flight
         self.frontier = Frontier(config.traversal, items)
@@ -95,6 +107,7 @@ class MasterCoordinator:
                 discovered_at=item.discovered_at,
                 request=_request_payload(self.config.request),
                 parsing=_parsing_payload(self.config.parsing),
+                hooks=_hook_payload(self.config.hooks, distributed=True),
                 rendering=_rendering_payload(self.config.rendering),
             )
 
@@ -135,12 +148,53 @@ class MasterCoordinator:
             sha = result.sha256 or (content_hash(body) if body else None)
             content_length = result.content_length if result.content_length is not None else len(body)
             content_type = result.content_type
+            annotations = result.annotations
 
             summary = None
             if result.title or result.h1 or result.word_count is not None:
                 summary = ContentSummary(
                     title=result.title, h1=result.h1, word_count=result.word_count
                 )
+
+            if self.hook_runner and should_run_hook(
+                self.config.hooks, distributed=True, role="master"
+            ):
+                context = HookContext(
+                    workspace=self.workspace,
+                    page_id=item.page_id,
+                    url_original=item.url_original,
+                    url_normalized=item.url_normalized,
+                    final_url=result.final_url,
+                    fetched_at=now,
+                    status_code=result.status_code,
+                    content_type=content_type,
+                    content_length=content_length,
+                    headers=result.headers,
+                    body=body,
+                    text=result.text,
+                    title=result.title,
+                    h1=result.h1,
+                    word_count=result.word_count,
+                    outlinks=result.outlinks or None,
+                    proxy_used=result.proxy_used,
+                )
+                try:
+                    hook_result = self.hook_runner.run(context)
+                    if hook_result.annotations:
+                        if annotations:
+                            annotations = {**annotations, **hook_result.annotations}
+                        else:
+                            annotations = hook_result.annotations
+                except Exception as exc:  # pragma: no cover - hook behavior
+                    logger.warning("Hook failed for %s: %s", item.url_normalized, exc)
+                    self.backend.events.log(
+                        "hook_failed",
+                        {
+                            "page_id": item.page_id,
+                            "url_normalized": item.url_normalized,
+                            "error": str(exc),
+                        },
+                    )
 
             self.backend.archive.write_page(
                 ArchiveWriteRequest(
@@ -157,6 +211,7 @@ class MasterCoordinator:
                     proxy_used=result.proxy_used,
                     text=result.text,
                     summary=summary,
+                    annotations=annotations,
                 )
             )
 
@@ -454,6 +509,24 @@ def _parsing_payload(parsing: ParsingConfig) -> ParsingPayload:
         extract_text=parsing.extract_text,
         extract_links=parsing.extract_links,
         max_links_per_page=parsing.max_links_per_page,
+    )
+
+
+def _hook_payload(hooks: HookConfig, *, distributed: bool) -> HookPayload:
+    run_on = hooks.run_on or "auto"
+    enabled = hooks.enabled
+    script_path = hooks.script_path
+    callable_path = hooks.callable
+    if distributed and run_on.lower() == "master":
+        enabled = False
+        script_path = None
+        callable_path = None
+    return HookPayload(
+        enabled=enabled,
+        script_path=script_path,
+        callable=callable_path,
+        function=hooks.function,
+        run_on=run_on,
     )
 
 

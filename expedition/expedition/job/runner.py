@@ -14,6 +14,7 @@ from ..config import ExpeditionConfig
 from ..dedupe import content_hash, url_fingerprint
 from ..fetcher import CloudscraperFetcher, ProxySelector
 from ..frontier import Frontier
+from ..hooks import HookContext, HookRunner, should_run_hook
 from ..normalize import normalize_url
 from ..parser import ParsedPage, parse_html
 from ..renderer import render_html
@@ -46,6 +47,7 @@ class JobRunner:
         config: ExpeditionConfig,
         storage: StorageBackend,
         job_state: JobState,
+        hook_runner: HookRunner | None = None,
     ) -> None:
         self.workspace = workspace
         self.config = config
@@ -56,6 +58,7 @@ class JobRunner:
         self.page_id_map = dict(job_state.page_id_map)
         self.fetcher = CloudscraperFetcher(ProxySelector(config.request.proxies))
         self.archive = storage.archive
+        self.hook_runner = hook_runner
         self.allow_patterns = [re.compile(p) for p in config.allow_patterns]
         self.deny_patterns = [re.compile(p) for p in config.deny_patterns]
         self._lock = threading.Lock()
@@ -205,6 +208,7 @@ class JobRunner:
         summary = None
         outlinks: list[str] = []
         text = None
+        annotations = None
         if outcome.parsed:
             title = outcome.parsed.title
             text = outcome.parsed.text
@@ -228,6 +232,42 @@ class JobRunner:
                 },
             )
 
+        if self.hook_runner and should_run_hook(
+            self.config.hooks, distributed=False, role="master"
+        ):
+            context = HookContext(
+                workspace=self.workspace,
+                page_id=item.page_id,
+                url_original=item.url_original,
+                url_normalized=item.url_normalized,
+                final_url=outcome.final_url,
+                fetched_at=now,
+                status_code=outcome.status_code,
+                content_type=outcome.content_type,
+                content_length=outcome.content_length,
+                headers=outcome.headers,
+                body=outcome.body,
+                text=text,
+                title=title,
+                h1=h1,
+                word_count=word_count,
+                outlinks=outlinks or None,
+                proxy_used=outcome.proxy_used,
+            )
+            try:
+                hook_result = self.hook_runner.run(context)
+                annotations = hook_result.annotations
+            except Exception as exc:  # pragma: no cover - hook behavior
+                logger.warning("Hook failed for %s: %s", item.url_normalized, exc)
+                self.storage.events.log(
+                    "hook_failed",
+                    {
+                        "page_id": item.page_id,
+                        "url_normalized": item.url_normalized,
+                        "error": str(exc),
+                    },
+                )
+
         content_sha = content_hash(outcome.body) if outcome.body else None
 
         self.archive.write_page(
@@ -245,6 +285,7 @@ class JobRunner:
                 proxy_used=outcome.proxy_used,
                 text=text,
                 summary=summary,
+                annotations=annotations,
             )
         )
 

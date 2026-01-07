@@ -178,6 +178,63 @@ req = backend.archive.read_request("00000001")
 headers = backend.archive.read_response_headers("00000001")
 ```
 
+## Hooks (per-page processing)
+
+Hooks are optional scripts or callables that run once per processed page. They receive a `HookContext` and can return annotations that are stored in `metadata.json`.
+
+### Hook script example
+
+```python
+# hook.py
+def process_page(context):
+    return {
+        "tags": ["example"],
+        "page_id": context.page_id,
+    }
+```
+
+CLI:
+
+```bash
+uv run expedition init --workspace ./workspace --seed-url https://example.com \
+  --hook-script ./hook.py --hook-function process_page
+uv run expedition run --workspace ./workspace
+```
+
+Config file:
+
+```json
+{
+  "hooks": {
+    "enabled": true,
+    "script_path": "hook.py",
+    "function": "process_page",
+    "run_on": "auto"
+  }
+}
+```
+
+### Hook callable example
+
+```json
+{
+  "hooks": {
+    "enabled": true,
+    "callable": "my_project.hooks:process_page",
+    "run_on": "master"
+  }
+}
+```
+
+`run_on` values:
+
+- `auto`: run on worker in distributed mode; master in single-node mode
+- `master`: always run on the master/runner
+- `worker`: always run on the worker
+- `both`: run on both and merge annotations
+
+Note: if you run hooks on workers, the hook script/callable must exist on worker machines.
+
 ## Proxies
 
 Set proxies in the config (credentials are redacted in archives):
@@ -251,6 +308,49 @@ thread.join(timeout=5)
 ```
 
 In production you may prefer separate processes and terminate workers when the job status becomes `completed`.
+
+## Embark: drone data collection app
+
+Embark is a standalone CLI that uses Expedition + hooks to extract drone metadata with Ollama.
+
+### Initialize a workspace
+
+```bash
+uv run embark init --workspace ./embark_workspace \
+  --seed-url http://127.0.0.1:8124/index.html \
+  --max-depth 2 --max-pages 50 \
+  --ollama-url http://localhost:11434 \
+  --ollama-model llama3
+```
+
+### Run the crawl
+
+```bash
+uv run embark run --workspace ./embark_workspace
+uv run embark status --workspace ./embark_workspace
+```
+
+Embark writes an extracted drone database to:
+
+```
+workspace/embark/drone_db.json
+```
+
+Embark configuration is stored in:
+
+```
+workspace/embark_config.json
+```
+
+### Local demo site
+
+This repo includes a small demo site at `expedition/embark/demo_site/`.
+
+```bash
+python3 -m http.server 8124 --bind 127.0.0.1 --directory expedition/embark/demo_site
+```
+
+Then run Embark against `http://127.0.0.1:8124/index.html`.
 
 ## Archive API (programmatic)
 

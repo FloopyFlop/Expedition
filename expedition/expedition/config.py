@@ -120,6 +120,32 @@ class RenderingConfig:
 
 
 @dataclass
+class HookConfig:
+    enabled: bool = False
+    script_path: str | None = None
+    callable: str | None = None
+    function: str = "process_page"
+    run_on: str = "auto"
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]) -> "HookConfig":
+        script_path = data.get("script_path")
+        callable_path = data.get("callable")
+        explicit_enabled = data.get("enabled")
+        has_hook = bool(script_path or callable_path)
+        enabled = bool(explicit_enabled) if explicit_enabled is not None else has_hook
+        if has_hook and not enabled:
+            enabled = True
+        return HookConfig(
+            enabled=enabled,
+            script_path=script_path,
+            callable=callable_path,
+            function=str(data.get("function", "process_page")),
+            run_on=str(data.get("run_on", "auto")),
+        )
+
+
+@dataclass
 class NormalizationConfig:
     drop_query_param_prefixes: list[str] = field(
         default_factory=lambda: ["utm_", "fbclid", "gclid"]
@@ -174,6 +200,7 @@ class ExpeditionConfig:
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
     distributed: DistributedConfig = field(default_factory=DistributedConfig)
     rendering: RenderingConfig = field(default_factory=RenderingConfig)
+    hooks: HookConfig = field(default_factory=HookConfig)
     normalize: NormalizationConfig = field(default_factory=NormalizationConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
 
@@ -199,6 +226,7 @@ class ExpeditionConfig:
             concurrency=ConcurrencyConfig.from_dict(data.get("concurrency", {})),
             distributed=DistributedConfig.from_dict(data.get("distributed", {})),
             rendering=RenderingConfig.from_dict(data.get("rendering", {})),
+            hooks=HookConfig.from_dict(data.get("hooks", {})),
             normalize=NormalizationConfig.from_dict(data.get("normalize", {})),
             storage=StorageConfig.from_dict(data.get("storage", {})),
         )

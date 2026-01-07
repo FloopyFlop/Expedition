@@ -22,6 +22,7 @@ render = [
 
 [project.scripts]
 expedition = "expedition.cli:main"
+embark = "embark.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

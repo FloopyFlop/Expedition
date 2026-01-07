@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .config import ExpeditionConfig, load_config, resolve_storage_paths, write_config
+from .config import ExpeditionConfig, HookConfig, load_config, resolve_storage_paths, write_config
+from .hooks import HookRunner, PageHook, should_run_hook
 from .job.runner import JobRunner
 from .job.state import JobState
 from .logging import configure_logging
@@ -58,12 +59,23 @@ def load_workspace(
     return config, backend, job_state
 
 
-def run_workspace(workspace: Path | str) -> JobState:
+def run_workspace(
+    workspace: Path | str,
+    *,
+    hook: PageHook | HookRunner | None = None,
+) -> JobState:
     workspace_path = Path(workspace)
     config, backend, job_state = load_workspace(workspace_path)
     log_path = resolve_storage_paths(workspace_path, config.storage).logs_dir / "expedition.log"
     configure_logging(log_path)
-    runner = JobRunner(workspace_path, config, backend, job_state)
+    hook_runner = None
+    if hook:
+        hook_runner = hook if isinstance(hook, HookRunner) else HookRunner(
+            hook, config=HookConfig(enabled=True, run_on="master")
+        )
+    elif should_run_hook(config.hooks, distributed=False, role="master"):
+        hook_runner = HookRunner.from_config(config.hooks, workspace=workspace_path)
+    runner = JobRunner(workspace_path, config, backend, job_state, hook_runner=hook_runner)
     runner.run()
     return backend.job_state.load()
 

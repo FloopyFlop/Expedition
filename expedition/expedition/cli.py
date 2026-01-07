@@ -11,6 +11,7 @@ from .config import ExpeditionConfig, load_config, resolve_storage_paths, write_
 from .api import create_app
 from .distributed.master import create_master_app
 from .distributed.worker import WorkerClient
+from .hooks import HookRunner, should_run_hook
 from .job.runner import JobRunner
 from .job.state import JobState
 from .logging import configure_logging
@@ -124,6 +125,14 @@ def _add_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-links-per-page", type=int, default=200)
 
     parser.add_argument("--max-workers", type=int, default=4)
+    parser.add_argument("--hook-script")
+    parser.add_argument("--hook-callable")
+    parser.add_argument("--hook-function", default="process_page")
+    parser.add_argument(
+        "--hook-run-on",
+        choices=["auto", "master", "worker", "both"],
+        default="auto",
+    )
 
 
 def _build_config_from_args(args: argparse.Namespace) -> ExpeditionConfig:
@@ -151,6 +160,12 @@ def _build_config_from_args(args: argparse.Namespace) -> ExpeditionConfig:
     config.parsing.max_links_per_page = args.max_links_per_page
 
     config.concurrency.max_workers = args.max_workers
+    if args.hook_script or args.hook_callable:
+        config.hooks.enabled = True
+        config.hooks.script_path = args.hook_script
+        config.hooks.callable = args.hook_callable
+        config.hooks.function = args.hook_function
+        config.hooks.run_on = args.hook_run_on
 
     return config
 
@@ -200,7 +215,11 @@ def _run_workspace(workspace: Path) -> None:
     job_state = backend.job_state.load()
     configure_logging(resolve_storage_paths(workspace, config.storage).logs_dir / "expedition.log")
 
-    runner = JobRunner(workspace, config, backend, job_state)
+    hook_runner = None
+    if should_run_hook(config.hooks, distributed=False, role="master"):
+        hook_runner = HookRunner.from_config(config.hooks, workspace=workspace)
+
+    runner = JobRunner(workspace, config, backend, job_state, hook_runner=hook_runner)
     runner.run()
 
 

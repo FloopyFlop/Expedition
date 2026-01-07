@@ -7,12 +7,14 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event
 
-from ..config import RenderingConfig, RequestConfig
+from ..config import HookConfig, RenderingConfig, RequestConfig
 from ..dedupe import content_hash
 from ..fetcher import CloudscraperFetcher, ProxySelector
+from ..hooks import HookContext, HookRunner, should_run_hook
 from ..logging import configure_logging
 from ..parser import parse_html
 from ..renderer import render_html
@@ -87,6 +89,7 @@ class WorkerClient:
         final_url = result.final_url
         render_error: str | None = None
         rendered_html: str | None = None
+        annotations = None
 
         if result.error is None and _is_parsable(result.content_type):
             if task.rendering.enabled:
@@ -117,6 +120,35 @@ class WorkerClient:
         sha = content_hash(result.body) if result.body else None
         body_b64 = base64.b64encode(result.body).decode("ascii") if result.body else None
 
+        hook_config = HookConfig.from_dict(_model_dump(task.hooks))
+        if should_run_hook(hook_config, distributed=True, role="worker"):
+            try:
+                hook_runner = HookRunner.from_config(hook_config, workspace=self.workspace)
+                if hook_runner:
+                    context = HookContext(
+                        workspace=self.workspace,
+                        page_id=task.page_id,
+                        url_original=task.url_original,
+                        url_normalized=task.url_normalized,
+                        final_url=final_url,
+                        fetched_at=_utc_now(),
+                        status_code=result.status_code,
+                        content_type=result.content_type,
+                        content_length=result.content_length,
+                        headers=result.headers,
+                        body=result.body,
+                        text=text,
+                        title=parsed.title if parsed else None,
+                        h1=parsed.h1 if parsed else None,
+                        word_count=parsed.word_count if parsed else None,
+                        outlinks=outlinks or None,
+                        proxy_used=result.proxy_used,
+                    )
+                    hook_result = hook_runner.run(context)
+                    annotations = hook_result.annotations
+            except Exception as exc:  # pragma: no cover - hook behavior
+                logger.warning("Hook failed for %s: %s", task.url_normalized, exc)
+
         return TaskResult(
             task_id=task.task_id,
             page_id=task.page_id,
@@ -136,6 +168,7 @@ class WorkerClient:
             text=text,
             outlinks=outlinks,
             proxy_used=result.proxy_used,
+            annotations=annotations,
         )
 
     def _post_result(self, result: TaskResult) -> None:
@@ -192,3 +225,7 @@ def _model_dump(model) -> dict[str, object]:
     if hasattr(model, "model_dump"):
         return model.model_dump()
     return model.dict()
+
+
+def _utc_now() -> str:
+    return datetime.now(tz=timezone.utc).isoformat()

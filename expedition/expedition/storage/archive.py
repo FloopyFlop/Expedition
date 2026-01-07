@@ -56,6 +56,7 @@ class LocalArchiveStore:
             "content_type": request.content_type,
             "content_hash": request.content_hash,
             "summary": summary_payload,
+            "annotations": request.annotations,
             "storage": {
                 "body": body_filename,
                 "request": "request.json",

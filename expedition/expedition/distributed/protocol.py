@@ -24,6 +24,14 @@ class ParsingPayload(BaseModel):
     max_links_per_page: int | None
 
 
+class HookPayload(BaseModel):
+    enabled: bool
+    script_path: str | None
+    callable: str | None
+    function: str
+    run_on: str
+
+
 class RenderingPayload(BaseModel):
     enabled: bool
     provider: str
@@ -43,6 +51,7 @@ class TaskResponse(BaseModel):
     discovered_at: str
     request: RequestPayload
     parsing: ParsingPayload
+    hooks: HookPayload
     rendering: RenderingPayload
 
 
@@ -65,3 +74,4 @@ class TaskResult(BaseModel):
     text: str | None = None
     outlinks: list[str] = Field(default_factory=list)
     proxy_used: str | None = None
+    annotations: dict[str, Any] | None = None
