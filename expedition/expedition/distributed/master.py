@@ -18,6 +18,7 @@ from ..config import (
     ParsingConfig,
     RenderingConfig,
     RequestConfig,
+    SourceConfig,
     load_config,
 )
 from ..dedupe import content_hash, url_fingerprint
@@ -27,6 +28,7 @@ from ..normalize import normalize_url
 from ..storage.factory import create_backend
 from ..storage.interfaces import StorageBackend
 from ..storage.models import ArchiveWriteRequest, ContentSummary
+from ..sources import resolve_sources
 from .protocol import (
     HookPayload,
     ParsingPayload,
@@ -50,6 +52,8 @@ class MasterCoordinator:
         self.hook_runner = None
         if should_run_hook(config.hooks, distributed=True, role="master"):
             self.hook_runner = HookRunner.from_config(config.hooks, workspace=workspace)
+        self.sources = resolve_sources(config)
+        self.source_status = self.job_state.source_status
 
         items = self.job_state.frontier + self.job_state.in_flight
         self.frontier = Frontier(config.traversal, items)
@@ -63,6 +67,7 @@ class MasterCoordinator:
         self._lock = threading.Lock()
 
         self._seed_frontier_if_needed()
+        self._init_source_status()
         self._checkpoint("master_init")
 
     def register_worker(self) -> str:
@@ -92,7 +97,12 @@ class MasterCoordinator:
                     self._checkpoint("frontier_empty")
                 return None
 
-            item = self.frontier.pop()
+            item = self._next_frontier_item()
+            if item is None:
+                if not self.in_flight:
+                    self.job_state.status = "completed"
+                    self._checkpoint("frontier_exhausted")
+                return None
             task_id = f"task-{uuid.uuid4()}"
             self.in_flight[task_id] = item
             self._checkpoint("task_assigned")
@@ -100,6 +110,7 @@ class MasterCoordinator:
             return TaskResponse(
                 task_id=task_id,
                 page_id=item.page_id,
+                source_id=item.source_id,
                 url_original=item.url_original,
                 url_normalized=item.url_normalized,
                 depth=item.depth,
@@ -123,6 +134,7 @@ class MasterCoordinator:
                 self.job_state.counters["failed"] = (
                     self.job_state.counters.get("failed", 0) + 1
                 )
+                self._bump_source_counter(item.source_id, "failed", 1)
                 self._append_sitemap_entry(
                     item=item,
                     fetched_at=now,
@@ -161,6 +173,7 @@ class MasterCoordinator:
             ):
                 context = HookContext(
                     workspace=self.workspace,
+                    source_id=item.source_id,
                     page_id=item.page_id,
                     url_original=item.url_original,
                     url_normalized=item.url_normalized,
@@ -199,6 +212,7 @@ class MasterCoordinator:
             self.backend.archive.write_page(
                 ArchiveWriteRequest(
                     page_id=item.page_id,
+                    source_id=item.source_id,
                     url_original=item.url_original,
                     url_normalized=item.url_normalized,
                     fetched_at=now,
@@ -237,6 +251,7 @@ class MasterCoordinator:
             self.job_state.counters["fetched"] = (
                 self.job_state.counters.get("fetched", 0) + 1
             )
+            self._bump_source_counter(item.source_id, "fetched", 1)
             self.backend.events.log(
                 "page_fetched",
                 {
@@ -257,7 +272,8 @@ class MasterCoordinator:
         return headers
 
     def _enqueue_links(self, links: Iterable[tuple[str, str]], parent: FrontierItem) -> None:
-        if self.config.max_depth is not None and parent.depth >= self.config.max_depth:
+        max_depth = self._source_max_depth(parent.source_id)
+        if max_depth is not None and parent.depth >= max_depth:
             return
 
         for original, normalized in links:
@@ -266,6 +282,7 @@ class MasterCoordinator:
                 self.job_state.counters["skipped"] = (
                     self.job_state.counters.get("skipped", 0) + 1
                 )
+                self._bump_source_counter(parent.source_id, "skipped", 1)
                 continue
             page_id = self._get_or_create_page_id(normalized)
             item = FrontierItem(
@@ -275,6 +292,7 @@ class MasterCoordinator:
                 parent_page_id=parent.page_id,
                 page_id=page_id,
                 discovered_at=_utc_now(),
+                source_id=parent.source_id,
             )
             self.visited.add(fingerprint)
             self.frontier.push(item)
@@ -322,60 +340,80 @@ class MasterCoordinator:
     def _seed_frontier_if_needed(self) -> None:
         if self.frontier.to_list() or self.visited:
             return
+        if not self.sources:
+            raise ValueError("No sources configured. Provide seed_url(s) or input_urls_file(s).")
 
-        if self.config.mode == "crawl":
-            if not self.config.seed_url:
-                raise ValueError("seed_url is required for crawl mode")
-            normalized = normalize_url(
-                self.config.seed_url,
-                drop_query_param_prefixes=self.config.normalize.drop_query_param_prefixes,
-            )
-            page_id = self._get_or_create_page_id(normalized)
-            item = FrontierItem(
-                url_original=self.config.seed_url,
-                url_normalized=normalized,
-                depth=0,
-                parent_page_id=None,
-                page_id=page_id,
-                discovered_at=_utc_now(),
-            )
-            self.frontier.push(item)
-            self.visited.add(url_fingerprint(normalized))
-            return
-
-        if self.config.mode == "list":
-            urls = self._read_input_urls()
-            for url in urls:
+        for source in self.sources:
+            self._ensure_source_state(source.source_id)
+            if source.mode == "crawl":
+                if not source.seed_url:
+                    raise ValueError(f"seed_url is required for source {source.source_id}")
                 normalized = normalize_url(
-                    url,
+                    source.seed_url,
                     drop_query_param_prefixes=self.config.normalize.drop_query_param_prefixes,
                 )
                 if not normalized:
                     continue
-                if not self._in_scope(normalized):
-                    continue
-                fingerprint = url_fingerprint(normalized)
-                if fingerprint in self.visited:
-                    continue
                 page_id = self._get_or_create_page_id(normalized)
                 item = FrontierItem(
-                    url_original=url,
+                    url_original=source.seed_url,
                     url_normalized=normalized,
                     depth=0,
                     parent_page_id=None,
                     page_id=page_id,
                     discovered_at=_utc_now(),
+                    source_id=source.source_id,
                 )
-                self.visited.add(fingerprint)
+                if url_fingerprint(normalized) in self.visited:
+                    self._bump_source_counter(source.source_id, "skipped", 1)
+                    self.job_state.counters["skipped"] = (
+                        self.job_state.counters.get("skipped", 0) + 1
+                    )
+                    continue
                 self.frontier.push(item)
-            return
+                self.visited.add(url_fingerprint(normalized))
+                self._mark_source_running(source.source_id)
+                continue
 
-        raise ValueError(f"Unknown mode: {self.config.mode}")
+            if source.mode == "list":
+                urls = self._read_input_urls(source)
+                for url in urls:
+                    normalized = normalize_url(
+                        url,
+                        drop_query_param_prefixes=self.config.normalize.drop_query_param_prefixes,
+                    )
+                    if not normalized:
+                        continue
+                    if not self._in_scope(normalized):
+                        continue
+                    fingerprint = url_fingerprint(normalized)
+                    if fingerprint in self.visited:
+                        self._bump_source_counter(source.source_id, "skipped", 1)
+                        self.job_state.counters["skipped"] = (
+                            self.job_state.counters.get("skipped", 0) + 1
+                        )
+                        continue
+                    page_id = self._get_or_create_page_id(normalized)
+                    item = FrontierItem(
+                        url_original=url,
+                        url_normalized=normalized,
+                        depth=0,
+                        parent_page_id=None,
+                        page_id=page_id,
+                        discovered_at=_utc_now(),
+                        source_id=source.source_id,
+                    )
+                    self.visited.add(fingerprint)
+                    self.frontier.push(item)
+                self._mark_source_running(source.source_id)
+                continue
 
-    def _read_input_urls(self) -> list[str]:
-        if not self.config.input_urls_file:
-            raise ValueError("input_urls_file is required for list mode")
-        path = Path(self.config.input_urls_file)
+            raise ValueError(f"Unknown source mode: {source.mode}")
+
+    def _read_input_urls(self, source: SourceConfig) -> list[str]:
+        if not source.input_urls_file:
+            raise ValueError(f"input_urls_file is required for source {source.source_id}")
+        path = Path(source.input_urls_file)
         if not path.is_absolute():
             path = self.workspace / path
         if not path.exists():
@@ -412,6 +450,7 @@ class MasterCoordinator:
     ) -> None:
         entry = {
             "page_id": item.page_id,
+            "source_id": item.source_id,
             "url_original": item.url_original,
             "url_normalized": item.url_normalized,
             "parent_page_id": item.parent_page_id,
@@ -433,6 +472,7 @@ class MasterCoordinator:
         self.job_state.visited_url_fingerprints = list(self.visited)
         self.job_state.page_id_map = dict(self.page_id_map)
         self.job_state.counters["queued"] = len(self.frontier)
+        self._mark_source_completed_if_done()
         self.job_state.last_checkpoint_at = _utc_now()
         self.job_state.updated_at = _utc_now()
         self.backend.job_state.save(self.job_state)
@@ -453,6 +493,110 @@ class MasterCoordinator:
             return False
         fetched = self.job_state.counters.get("fetched", 0)
         return fetched + len(self.in_flight) >= self.config.max_pages
+
+    def _next_frontier_item(self) -> FrontierItem | None:
+        while not self.frontier.is_empty():
+            item = self.frontier.pop()
+            if self._source_max_pages_reached(item.source_id):
+                self._bump_source_counter(item.source_id, "skipped", 1)
+                self.job_state.counters["skipped"] = self.job_state.counters.get("skipped", 0) + 1
+                continue
+            return item
+        return None
+
+    def _source_max_pages_reached(self, source_id: str) -> bool:
+        max_pages = self._source_max_pages(source_id)
+        if max_pages is None:
+            return False
+        fetched = self._source_counter(source_id, "fetched")
+        in_flight_count = sum(
+            1 for item in self.in_flight.values() if item.source_id == source_id
+        )
+        return fetched + in_flight_count >= max_pages
+
+    def _source_max_pages(self, source_id: str) -> int | None:
+        source = self._source_by_id(source_id)
+        if source and source.max_pages is not None:
+            return source.max_pages
+        return None
+
+    def _source_max_depth(self, source_id: str) -> int | None:
+        source = self._source_by_id(source_id)
+        if source and source.max_depth is not None:
+            return source.max_depth
+        return self.config.max_depth
+
+    def _source_by_id(self, source_id: str) -> SourceConfig | None:
+        for source in self.sources:
+            if source.source_id == source_id:
+                return source
+        if source_id == "default":
+            return SourceConfig(
+                source_id="default",
+                mode=self.config.mode,
+                seed_url=self.config.seed_url,
+                input_urls_file=self.config.input_urls_file,
+                traversal=self.config.traversal,
+                max_depth=self.config.max_depth,
+                max_pages=self.config.max_pages,
+            )
+        return None
+
+    def _init_source_status(self) -> None:
+        for source in self.sources:
+            self._ensure_source_state(source.source_id)
+        for item in self.frontier.to_list():
+            self._mark_source_running(item.source_id)
+
+    def _ensure_source_state(self, source_id: str) -> None:
+        if source_id in self.source_status:
+            return
+        source = self._source_by_id(source_id)
+        payload = {
+            "status": "pending",
+            "mode": source.mode if source else None,
+            "seed_url": source.seed_url if source else None,
+            "input_urls_file": source.input_urls_file if source else None,
+            "max_depth": source.max_depth if source else None,
+            "max_pages": source.max_pages if source else None,
+            "counters": {"fetched": 0, "skipped": 0, "failed": 0, "queued": 0},
+        }
+        self.source_status[source_id] = payload
+
+    def _mark_source_running(self, source_id: str) -> None:
+        self._ensure_source_state(source_id)
+        self.source_status[source_id]["status"] = "running"
+
+    def _mark_source_completed_if_done(self) -> None:
+        if not self.sources:
+            return
+        source_queue_counts: dict[str, int] = {
+            source.source_id: 0 for source in self.sources
+        }
+        for item in self.frontier.to_list():
+            source_queue_counts[item.source_id] = source_queue_counts.get(item.source_id, 0) + 1
+        for item in self.in_flight.values():
+            source_queue_counts[item.source_id] = source_queue_counts.get(item.source_id, 0) + 1
+        for source_id, count in source_queue_counts.items():
+            self._ensure_source_state(source_id)
+            self.source_status[source_id]["counters"]["queued"] = count
+            status = self.source_status[source_id].get("status")
+            if count == 0 and status == "running":
+                self.source_status[source_id]["status"] = "completed"
+
+    def _source_counter(self, source_id: str, key: str) -> int:
+        self._ensure_source_state(source_id)
+        counters = self.source_status[source_id].setdefault(
+            "counters", {"fetched": 0, "skipped": 0, "failed": 0, "queued": 0}
+        )
+        return int(counters.get(key, 0))
+
+    def _bump_source_counter(self, source_id: str, key: str, amount: int) -> None:
+        self._ensure_source_state(source_id)
+        counters = self.source_status[source_id].setdefault(
+            "counters", {"fetched": 0, "skipped": 0, "failed": 0, "queued": 0}
+        )
+        counters[key] = int(counters.get(key, 0)) + amount
 
 
 def create_master_app(workspace: Path) -> FastAPI:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -12,6 +12,7 @@ class FrontierItem:
     parent_page_id: str | None
     page_id: str
     discovered_at: str
+    source_id: str = "default"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -21,6 +22,7 @@ class FrontierItem:
             "parent_page_id": self.parent_page_id,
             "page_id": self.page_id,
             "discovered_at": self.discovered_at,
+            "source_id": self.source_id,
         }
 
     @staticmethod
@@ -32,6 +34,7 @@ class FrontierItem:
             parent_page_id=data.get("parent_page_id"),
             page_id=str(data.get("page_id", "")),
             discovered_at=str(data.get("discovered_at", "")),
+            source_id=str(data.get("source_id", "default")),
         )
 
 
@@ -47,6 +50,7 @@ class JobState:
     page_id_map: dict[str, str]
     counters: dict[str, int]
     next_page_id: int
+    source_status: dict[str, dict[str, Any]] = field(default_factory=dict)
     last_checkpoint_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -61,6 +65,7 @@ class JobState:
             "page_id_map": dict(self.page_id_map),
             "counters": dict(self.counters),
             "next_page_id": int(self.next_page_id),
+            "source_status": dict(self.source_status),
             "last_checkpoint_at": self.last_checkpoint_at,
         }
 
@@ -81,6 +86,7 @@ class JobState:
             page_id_map=dict(data.get("page_id_map", {})),
             counters=dict(data.get("counters", _default_counters())),
             next_page_id=int(data.get("next_page_id", 1)),
+            source_status=dict(data.get("source_status", {})),
             last_checkpoint_at=data.get("last_checkpoint_at"),
         )
 

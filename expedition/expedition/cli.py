@@ -41,6 +41,9 @@ def main() -> None:
     status_parser = subparsers.add_parser("status", help="Show job status")
     _add_workspace_arg(status_parser)
 
+    sources_parser = subparsers.add_parser("sources", help="Show per-source status")
+    _add_workspace_arg(sources_parser)
+
     serve_parser = subparsers.add_parser("serve", help="Serve archive API")
     _add_workspace_arg(serve_parser)
     serve_parser.add_argument("--host", default="127.0.0.1")
@@ -85,6 +88,10 @@ def main() -> None:
         _print_status(workspace)
         return
 
+    if args.command == "sources":
+        _print_sources(workspace)
+        return
+
     if args.command == "serve":
         _serve_workspace(workspace, host=args.host, port=args.port)
         return
@@ -104,8 +111,8 @@ def _add_workspace_arg(parser: argparse.ArgumentParser) -> None:
 
 def _add_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--mode", choices=["crawl", "list"], default="crawl")
-    parser.add_argument("--seed-url", dest="seed_url")
-    parser.add_argument("--input-urls-file", dest="input_urls_file")
+    parser.add_argument("--seed-url", dest="seed_url", action="append", default=[])
+    parser.add_argument("--input-urls-file", dest="input_urls_file", action="append", default=[])
     parser.add_argument("--traversal", choices=["bfs", "dfs"], default="bfs")
     parser.add_argument("--max-depth", type=int, default=2)
     parser.add_argument("--max-pages", type=int)
@@ -138,8 +145,10 @@ def _add_config_args(parser: argparse.ArgumentParser) -> None:
 def _build_config_from_args(args: argparse.Namespace) -> ExpeditionConfig:
     config = ExpeditionConfig(
         mode=args.mode,
-        seed_url=args.seed_url,
-        input_urls_file=args.input_urls_file,
+        seed_url=args.seed_url[0] if args.seed_url else None,
+        seed_urls=list(args.seed_url),
+        input_urls_file=args.input_urls_file[0] if args.input_urls_file else None,
+        input_urls_files=list(args.input_urls_file),
         traversal=args.traversal,
         max_depth=args.max_depth,
         max_pages=args.max_pages,
@@ -245,8 +254,16 @@ def _print_status(workspace: Path) -> None:
         "updated_at": job_state.updated_at,
         "frontier_size": len(job_state.frontier),
         "counters": job_state.counters,
+        "sources": job_state.source_status,
     }
     print(json.dumps(summary, indent=2, sort_keys=True))
+
+
+def _print_sources(workspace: Path) -> None:
+    config = load_config(workspace / "config.json")
+    backend = create_backend(workspace, config)
+    job_state = backend.job_state.load()
+    print(json.dumps(job_state.source_status, indent=2, sort_keys=True))
 
 
 def _print_init_summary(workspace: Path, config: ExpeditionConfig) -> None:

@@ -146,6 +146,34 @@ init_workspace(workspace, config)
 run_workspace(workspace)
 ```
 
+## Multi-source archives
+
+You can combine multiple crawl roots and list files in a single workspace using `sources`.
+
+```json
+{
+  "sources": [
+    {
+      "source_id": "agency-root",
+      "mode": "crawl",
+      "seed_url": "https://example.gov",
+      "max_depth": 2
+    },
+    {
+      "source_id": "legacy-list",
+      "mode": "list",
+      "input_urls_file": "urls.txt"
+    }
+  ]
+}
+```
+
+Per-source progress is stored in `job_state.json` under `source_status`, and you can view it via:
+
+```bash
+uv run expedition sources --workspace ./workspace
+```
+
 ## Reading results programmatically
 
 The simplest path is to read JSON/JSONL files directly:
@@ -369,6 +397,7 @@ Endpoints:
 - `GET /pages/{page_id}`
 - `GET /pages/{page_id}/body`
 - `GET /sitemap?offset=0&limit=100`
+- `GET /sources` (returns configured sources + per-source status)
 
 ## Machine-level smoke test (checklist + script)
 

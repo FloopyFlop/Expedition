@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
@@ -52,14 +53,44 @@ def create_app(workspace: Path) -> FastAPI:
 
     @app.get("/sitemap")
     def get_sitemap(
-        offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=1000)
+        offset: int = Query(0, ge=0),
+        limit: int = Query(100, ge=1, le=1000),
+        source_id: str | None = None,
     ):
-        entries = list(backend.sitemap.iter_entries(offset=offset, limit=limit))
+        if not source_id:
+            entries = list(backend.sitemap.iter_entries(offset=offset, limit=limit))
+            return {
+                "items": entries,
+                "offset": offset,
+                "limit": limit,
+                "next_offset": offset + len(entries),
+            }
+
+        filtered: list[dict] = []
+        seen = 0
+        for entry in backend.sitemap.iter_entries(offset=0, limit=None):
+            if entry.get("source_id") != source_id:
+                continue
+            if seen < offset:
+                seen += 1
+                continue
+            if len(filtered) >= limit:
+                break
+            filtered.append(entry)
+            seen += 1
         return {
-            "items": entries,
+            "items": filtered,
             "offset": offset,
             "limit": limit,
-            "next_offset": offset + len(entries),
+            "next_offset": offset + len(filtered),
+        }
+
+    @app.get("/sources")
+    def get_sources():
+        job_state = backend.job_state.load()
+        return {
+            "sources": [asdict(source) for source in config.sources],
+            "source_status": job_state.source_status,
         }
 
     return app

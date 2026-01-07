@@ -22,6 +22,7 @@ class ContentSummary:
 @dataclass
 class ArchiveWriteRequest:
     page_id: str
+    source_id: str | None
     url_original: str
     url_normalized: str
     fetched_at: str

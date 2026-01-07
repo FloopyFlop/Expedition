@@ -35,6 +35,35 @@ class ProxyConfig:
 
 
 @dataclass
+class SourceConfig:
+    source_id: str | None = None
+    mode: str | None = None
+    seed_url: str | None = None
+    input_urls_file: str | None = None
+    traversal: str | None = None
+    max_depth: int | None = None
+    max_pages: int | None = None
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]) -> "SourceConfig":
+        max_pages = data.get("max_pages")
+        if max_pages is not None:
+            max_pages = int(max_pages)
+        max_depth = data.get("max_depth")
+        if max_depth is not None:
+            max_depth = int(max_depth)
+        return SourceConfig(
+            source_id=data.get("source_id"),
+            mode=data.get("mode"),
+            seed_url=data.get("seed_url"),
+            input_urls_file=data.get("input_urls_file"),
+            traversal=data.get("traversal"),
+            max_depth=max_depth,
+            max_pages=max_pages,
+        )
+
+
+@dataclass
 class RequestConfig:
     timeout_seconds: int = 15
     max_retries: int = 2
@@ -186,7 +215,10 @@ class StorageConfig:
 class ExpeditionConfig:
     mode: str = "crawl"
     seed_url: str | None = None
+    seed_urls: list[str] = field(default_factory=list)
     input_urls_file: str | None = None
+    input_urls_files: list[str] = field(default_factory=list)
+    sources: list[SourceConfig] = field(default_factory=list)
     traversal: str = "bfs"
     max_depth: int = 2
     max_pages: int | None = None
@@ -209,10 +241,17 @@ class ExpeditionConfig:
         max_pages = data.get("max_pages")
         if max_pages is not None:
             max_pages = int(max_pages)
+        seed_urls = list(data.get("seed_urls", []))
+        input_urls_files = list(data.get("input_urls_files", []))
+        sources_data = data.get("sources", [])
+        sources = [SourceConfig.from_dict(item) for item in sources_data]
         return ExpeditionConfig(
             mode=str(data.get("mode", "crawl")),
             seed_url=data.get("seed_url"),
+            seed_urls=seed_urls,
             input_urls_file=data.get("input_urls_file"),
+            input_urls_files=input_urls_files,
+            sources=sources,
             traversal=str(data.get("traversal", "bfs")),
             max_depth=int(data.get("max_depth", 2)),
             max_pages=max_pages,

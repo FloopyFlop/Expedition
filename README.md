@@ -77,6 +77,25 @@ Add a proxy in `config.json` (credentials will be redacted in archives):
 }
 ```
 
+## Multi-source archives
+
+You can crawl multiple roots and URL lists into one workspace and track each source separately.
+
+```json
+{
+  "sources": [
+    { "source_id": "agency-root", "mode": "crawl", "seed_url": "https://example.gov", "max_depth": 2 },
+    { "source_id": "legacy-list", "mode": "list", "input_urls_file": "urls.txt" }
+  ]
+}
+```
+
+Check per-source progress:
+
+```bash
+uv run expedition sources --workspace ./workspace
+```
+
 ## Hooks (optional)
 
 Run a per-page hook script or callable:

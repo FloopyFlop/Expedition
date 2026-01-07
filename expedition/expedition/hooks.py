@@ -12,6 +12,7 @@ from .config import HookConfig
 @dataclass
 class HookContext:
     workspace: Path
+    source_id: str
     page_id: str
     url_original: str
     url_normalized: str

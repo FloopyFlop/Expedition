@@ -127,6 +127,7 @@ class WorkerClient:
                 if hook_runner:
                     context = HookContext(
                         workspace=self.workspace,
+                        source_id=task.source_id,
                         page_id=task.page_id,
                         url_original=task.url_original,
                         url_normalized=task.url_normalized,

@@ -44,6 +44,7 @@ class RenderingPayload(BaseModel):
 class TaskResponse(BaseModel):
     task_id: str
     page_id: str
+    source_id: str
     url_original: str
     url_normalized: str
     depth: int

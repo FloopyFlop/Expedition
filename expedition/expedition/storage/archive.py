@@ -50,6 +50,7 @@ class LocalArchiveStore:
         summary_payload = request.summary.to_dict() if request.summary else None
         metadata_payload = {
             "page_id": request.page_id,
+            "source_id": request.source_id,
             "url_original": request.url_original,
             "url_normalized": request.url_normalized,
             "fetched_at": request.fetched_at,
